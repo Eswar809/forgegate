@@ -1,5 +1,7 @@
 # ForgeGate
 
+[![CI](https://github.com/Eswar809/forgegate/actions/workflows/ci.yml/badge.svg)](https://github.com/Eswar809/forgegate/actions/workflows/ci.yml)
+
 **Verified self-extension for AI ops agents.**
 
 An ops agent that hits a capability gap writes its own CLI tool — but **no tool runs until it passes an independent verification gate**. Verified tools are promoted to permanent procedural memory and reused.
