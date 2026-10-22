@@ -33,6 +33,7 @@ def task_from_slack(text: str, ts: str = "0", user: str = "") -> dict[str, Any]:
         "args": {},
         "tests": [],
         "expected_contains": [],
+        "judge": True,
         "tags": ["slack"],
         "requester": user,
     }
@@ -73,6 +74,9 @@ def build_app(agent: Agent, *, bot_token: str | None = None):
 
     @app.message("")
     def handle_message(message: dict[str, Any], say) -> None:
+        # Ignore bot traffic and edits/deletes; only act on fresh user messages.
+        if message.get("bot_id") or message.get("subtype"):
+            return
         text = str(message.get("text", "")).strip()
         if not text:
             return
@@ -103,4 +107,5 @@ def run_socket_mode(
     token = app_token or os.environ.get("SLACK_APP_TOKEN", "")
     if not token:
         raise RuntimeError("SLACK_APP_TOKEN is not set")
+    print("ForgeGate listening on Slack Socket Mode. Ctrl+C to stop.", flush=True)
     SocketModeHandler(app, token).start()

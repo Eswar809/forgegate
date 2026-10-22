@@ -43,6 +43,7 @@ if __name__ == "__main__":
         print("usage: tool.py --call '<json>'", file=sys.stderr)
 
 Return plain text. Be deterministic. Handle bad input with a short error string.
+Keep the file under 80 lines: no example data, no tests, no commentary.
 Reply with the Python source only, no markdown fences.
 """
 

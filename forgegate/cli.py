@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -58,7 +59,25 @@ def _print_facts(memory: Memory, limit: int = 50) -> None:
         print("no active facts")
 
 
+def load_env_file(path: Path | None = None) -> None:
+    """Load KEY=VALUE pairs from .env without overriding the real environment."""
+    path = path or repo_root() / ".env"
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key or not value or key in os.environ:
+            continue
+        os.environ[key] = value
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_env_file()
     parser = argparse.ArgumentParser(
         prog="forgegate", description="Verified self-extension for ops agents"
     )
@@ -223,7 +242,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve-slack":
         from .adapters.slack import run_socket_mode
 
-        run_socket_mode(Agent(root=args.root, session_id="slack"))
+        try:
+            run_socket_mode(Agent(root=args.root, session_id="slack"))
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         return 0
 
     if args.command == "poll-email":

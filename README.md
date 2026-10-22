@@ -114,7 +114,7 @@ forgegate/
 ├── memory/               # instructions.md, facts.json, history/
 ├── servers/              # promoted, verified tools only
 ├── staging/              # generated tools awaiting the gate
-├── tests/                # 40 gate, memory, judge, DB, session, agent tests
+├── tests/                # 52 gate, memory, judge, DB, session, agent, LLM tests
 ├── reference/            # cloned upstream repos (gitignored)
 └── docs/
     ├── ARCHITECTURE.md
@@ -132,9 +132,53 @@ $env:FORGEGATE_MODEL    = "muse-spark-1.3"
 python bench\run_bench.py --live
 ```
 
-When those env vars are present, `build_generator()` returns `LLMGenerator`; the
-same configuration also enables the semantic judge and LLM memory extraction.
+Any Anthropic-compatible endpoint works too — the Claude API, a gateway, or a
+local proxy. Set `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` instead; ForgeGate
+switches to `POST {base}/v1/messages` automatically when `FORGEGATE_API_BASE` is
+unset:
+
+```powershell
+$env:ANTHROPIC_BASE_URL  = "http://127.0.0.1:8084"
+$env:ANTHROPIC_AUTH_TOKEN = "dummy-token"
+$env:FORGEGATE_MODEL      = "claude-sonnet-5-5"
+python bench
+un_bench.py --live
+```
+
+`FORGEGATE_MODEL` is honoured in both modes; in Anthropic mode it defaults to
+`claude-sonnet-5-5`. To force a transport for a `FORGEGATE_API_BASE` that speaks
+the other protocol, set `FORGEGATE_API_STYLE=anthropic|openai`. A completion has
+120 s to arrive by default; slow local proxies can raise that with
+`FORGEGATE_HTTP_TIMEOUT=300`. Transient 5xx responses and timeouts are retried
+once; `FORGEGATE_HTTP_RETRIES` changes that.
+
+When a model is configured, `build_generator()` returns `LLMGenerator`; the same
+configuration also enables the semantic judge and LLM memory extraction.
 Otherwise the offline fixture generator is used so the demo and tests always run.
+
+## Run it on Slack
+
+[`docs/slack-manifest.json`](docs/slack-manifest.json) declares the whole app:
+Socket Mode, four bot scopes, and `message.im` events. Create it from that
+manifest at <https://api.slack.com/apps>, then:
+
+1. **App-Level Token** — Basic Information → App-Level Tokens → generate one
+   with `connections:write` (`xapp-…`).
+2. **Install** the app to the workspace and copy the Bot User OAuth Token
+   (`xoxb-…`) from OAuth & Permissions.
+3. Put both in `.env` at the repo root (gitignored), or export them:
+   `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`.
+4. Install and run:
+   ```powershell
+   python -m pip install -e ".[slack]"
+   python -m forgegate.cli serve-slack
+   ```
+5. DM the bot. Every message becomes a task; the reply is posted in-thread.
+   Free-form messages always request the semantic judge, so the live model
+   configuration above is required for them to pass.
+
+The CLI loads `.env` automatically and never overrides variables that are
+already set in the environment.
 
 ## CLI cheat sheet
 

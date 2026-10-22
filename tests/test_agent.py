@@ -91,6 +91,15 @@ class AgentLoopTests(unittest.TestCase):
     def test_judge_is_skipped_when_not_requested(self) -> None:
         self.assertIsNone(self.agent._judge({"description": "x"}, "output"))
 
+    def test_judge_requested_without_a_model_rejects_before_forging(self) -> None:
+        task = dict(self.task)
+        task["id"] = "judge-gate"
+        task["judge"] = True
+        result = self.agent.handle(task)
+        self.assertEqual(result["mode"], "rejected")
+        self.assertIn("judge", result["error"])
+        self.assertEqual(self.agent.registry.all(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

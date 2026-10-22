@@ -186,6 +186,18 @@ class Agent:
                 task, started, "reuse", existing.name, run,
             )
 
+        if (task.get("judge") or task.get("rubric")) and not self.judge.available():
+            # Fail closed before forging: without a judge there is no way to
+            # verify the answer, and promoting an unverified tool would grow
+            # procedural memory with something nothing checked.
+            return {
+                "task_id": task["id"], "mode": "rejected", "tool": None,
+                "ok": False, "output": "",
+                "error": "judge requested but no model endpoint configured",
+                "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                "gate": None, "judge": None, "memory_writes": 0,
+            }
+
         try:
             context = self.memory.prefetch(query)
             source = self.generator.generate(task, context=context)

@@ -12,6 +12,9 @@ memory/facts.json
 memory/facts_history.jsonl
 bench/results/
 
+# local secrets
+.env
+
 # python
 __pycache__/
 *.py[cod]

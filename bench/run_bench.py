@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from forgegate.agent import Agent  # noqa: E402
+from forgegate.cli import load_env_file  # noqa: E402
 from forgegate.generator import LLMGenerator  # noqa: E402
 
 
@@ -32,17 +33,19 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true", help="keep existing registry")
     parser.add_argument(
         "--live", action="store_true",
-        help="force the LLM generator (needs FORGEGATE_API_BASE/KEY/MODEL)",
+        help="force the LLM generator (needs a configured model endpoint)",
     )
     parser.add_argument("--tasks", type=Path, default=ROOT / "bench" / "tasks.jsonl")
     args = parser.parse_args()
+    load_env_file(ROOT / ".env")
 
     generator = None
     if args.live:
         generator = LLMGenerator(ROOT)
         if not generator.available():
             parser.error(
-                "--live needs FORGEGATE_API_BASE, FORGEGATE_API_KEY and FORGEGATE_MODEL"
+                "--live needs FORGEGATE_API_BASE/KEY/MODEL or "
+                "ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (and a model)"
             )
 
     if not args.keep:
