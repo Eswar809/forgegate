@@ -1,0 +1,8 @@
+2026-10-21T03:10:00Z INFO checkout request ok order=1001
+2026-10-21T03:11:12Z ERROR checkout timeout calling payment-api order=1002
+2026-10-21T03:12:30Z ERROR checkout 502 from inventory-api order=1003
+2026-10-21T03:13:00Z WARN checkout retrying order=1003
+2026-10-21T03:14:00Z ERROR billing invoice write failed order=1004
+2026-10-21T03:15:00Z INFO checkout request ok order=1005
+2026-10-21T03:16:00Z ERROR billing tax service unreachable order=1004
+2026-10-21T03:17:00Z ERROR auth token refresh failed user=88

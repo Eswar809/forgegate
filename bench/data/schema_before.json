@@ -1,0 +1,4 @@
+{
+  "users": ["id", "email", "created_at"],
+  "orders": ["id", "user_id", "total_cents"]
+}

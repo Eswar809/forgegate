@@ -1,0 +1,9 @@
+{
+  "jobs": [
+    {"id": "SYNC-1001", "customer": "ACME", "status": "success", "finished_at": "2026-10-20T09:00:00Z", "error": null},
+    {"id": "SYNC-1042", "customer": "ACME", "status": "failed", "finished_at": "2026-10-21T03:14:00Z", "error": "timeout after 300s while writing to warehouse"},
+    {"id": "SYNC-1050", "customer": "Globex", "status": "failed", "finished_at": "2026-10-21T05:00:00Z", "error": "auth token expired"},
+    {"id": "SYNC-1057", "customer": "Initech", "status": "failed", "finished_at": "2026-10-21T06:30:00Z", "error": "schema mismatch: column total_cents"},
+    {"id": "SYNC-1060", "customer": "Initech", "status": "success", "finished_at": "2026-10-21T08:00:00Z", "error": null}
+  ]
+}

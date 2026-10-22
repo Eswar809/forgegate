@@ -1,0 +1,17 @@
+# cloned upstream references (study only)
+reference/
+
+# generated / runtime state (recreated by bench/run_bench.py)
+staging/
+servers/
+registry.json
+memory/history/
+memory/proposals/
+bench/results/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/

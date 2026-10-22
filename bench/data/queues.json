@@ -1,0 +1,6 @@
+{
+  "queues": {
+    "sync": {"depth": 42, "oldest_age_min": 87},
+    "email": {"depth": 3, "oldest_age_min": 2}
+  }
+}
