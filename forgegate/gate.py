@@ -11,12 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import re
-import subprocess
-import sys
-import tempfile
-import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -173,39 +168,10 @@ def run_cli(
     args: dict[str, Any] | None = None,
     timeout: float = 10.0,
 ) -> dict[str, Any]:
-    """Run a tool through its --call entry point, isolated and time-boxed."""
-    tool_path = Path(tool_path).resolve()
-    env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-    if os.environ.get("PATH"):
-        env["PATH"] = os.environ["PATH"]
-    if os.name == "nt" and os.environ.get("SYSTEMROOT"):
-        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+    """Run a tool through its --call entry point in the selected sandbox."""
+    from .sandbox import run_tool
 
-    command = [
-        sys.executable, "-I", str(tool_path),
-        "--call", json.dumps(args or {}, ensure_ascii=False),
-    ]
-    with tempfile.TemporaryDirectory(prefix="forgegate-run-") as workdir:
-        started = time.perf_counter()
-        try:
-            proc = subprocess.run(
-                command, cwd=workdir, env=env, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return {
-                "ok": False, "returncode": -1, "stdout": "",
-                "stderr": f"timeout after {timeout}s",
-                "elapsed_ms": round(timeout * 1000, 1),
-            }
-        elapsed = (time.perf_counter() - started) * 1000
-        return {
-            "ok": proc.returncode == 0,
-            "returncode": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "elapsed_ms": round(elapsed, 1),
-        }
+    return run_tool(tool_path, args, timeout=timeout)
 
 
 def _is_subset(expected: Any, actual: Any) -> bool:

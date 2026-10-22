@@ -64,19 +64,47 @@ task ──► registry lookup ──hit──► run existing tool
 
 | Tier | File | Who writes it |
 |---|---|---|
-| Factual | `memory/facts.json` | read-only snapshot of services/DB schema |
+| Factual | `memory/facts.json` + `facts_history.jsonl` | the agent, after a verified run — ADD / UPDATE / NONE against existing facts, with soft invalidation and a full audit trail |
 | Behavioral | `memory/instructions.md` | human-approved proposals only (`memory propose` → `memory approve`) |
 | Procedural | `registry.json` + `servers/` | verification gate only |
+
+Facts are never silently overwritten: an update sets `valid_to` on the old fact
+and records `supersedes`, so history stays queryable (`memory fact-history`).
+Batch writes are validated on a deep copy and committed once.
+
+## Beyond the core loop
+
+The build also includes the pieces a real ops agent needs around the gate:
+
+- **Semantic judge** (`forgegate/judge.py`) — rubric-based LLM check for tasks
+  with no exact expected string. It fails closed: an unavailable model or a
+  malformed reply is a rejection.
+- **Read-only database** (`forgegate/db.py`) — generated tools never get a
+  connection. The agent reads through a statement allowlist *and* an engine-level
+  SQLite authorizer (or a read-only Postgres transaction).
+- **Sessions** (`forgegate/session.py`) — resumable `agent_sessions` /
+  `agent_messages` transcripts, inspectable with `session list|show`.
+- **Sandbox backends** (`forgegate/sandbox.py`) — hardened subprocess by default;
+  Docker with `--network none`, read-only root, memory and PID limits when
+  available.
+- **Ingress adapters** (`forgegate/adapters/`) — Slack Socket Mode and IMAP/SMTP,
+  both feeding `Agent.handle`.
 
 ## Repository layout
 
 ```
 forgegate/
 ├── forgegate/            # core package (stdlib only)
-│   ├── core.py           # registry + 3-tier memory
+│   ├── core.py           # registry + factual/behavioral memory
 │   ├── gate.py           # static + behavioral verification
 │   ├── generator.py      # fixture generator + LLM adapter
+│   ├── memory_ai.py      # optional LLM fact extraction and decisions
+│   ├── judge.py          # fail-closed semantic judge
+│   ├── db.py             # read-only SQLite / Postgres
+│   ├── session.py        # SQLite transcripts
+│   ├── sandbox.py        # subprocess / Docker execution
 │   ├── agent.py          # forge → verify → promote → reuse loop
+│   ├── adapters/         # Slack and email ingress
 │   └── cli.py
 ├── bench/
 │   ├── tasks.jsonl       # 8 ops tasks
@@ -86,9 +114,11 @@ forgegate/
 ├── memory/               # instructions.md, facts.json, history/
 ├── servers/              # promoted, verified tools only
 ├── staging/              # generated tools awaiting the gate
-├── tests/                # gate + registry unit tests
+├── tests/                # 40 gate, memory, judge, DB, session, agent tests
 ├── reference/            # cloned upstream repos (gitignored)
-└── docs/ARCHITECTURE.md
+└── docs/
+    ├── ARCHITECTURE.md
+    └── RESEARCH.md       # upstream → license → pattern map
 ```
 
 ## Using a real model (hackathon build)
@@ -102,14 +132,44 @@ $env:FORGEGATE_MODEL    = "muse-spark-1.3"
 python bench\run_bench.py --live
 ```
 
-When those env vars are present, `build_generator()` returns `LLMGenerator`; otherwise the offline fixture generator is used so the demo and tests always run.
+When those env vars are present, `build_generator()` returns `LLMGenerator`; the
+same configuration also enables the semantic judge and LLM memory extraction.
+Otherwise the offline fixture generator is used so the demo and tests always run.
+
+## CLI cheat sheet
+
+```powershell
+python -m forgegate.cli run --task-file task.json --session demo
+python -m forgegate.cli memory facts
+python -m forgegate.cli memory fact-history
+python -m forgegate.cli memory forget --fact fact-1a2b3c4d --reason "stale"
+python -m forgegate.cli session list
+python -m forgegate.cli gate servers\sync-failure-inspect\tool.py
+python -m forgegate.cli judge --task "..." --output "..." --expected SYNC-1042
+python -m forgegate.cli db tables --path bench\data\ops.db
+python -m forgegate.cli db query --path bench\data\ops.db --sql "SELECT * FROM jobs"
+python -m forgegate.cli serve-slack          # needs slack-bolt + SLACK_* env
+python -m forgegate.cli poll-email           # needs IMAP/SMTP env
+```
 
 ## Safety model
 
-- Generated tools run with `python -I` in a fresh temp working directory, minimal environment, hard timeout.
-- Static policy is fail-closed: imports must be allowlisted; subprocess, sockets, `eval`/`exec`, and file writes are rejected.
-- A failed gate never promotes. Promotion keeps the previous version under `servers/<name>/history/`.
-- Production hardening (Docker/Firecracker, egress rules, read-only DB roles) is described in `docs/ARCHITECTURE.md`.
+- Generated tools run through `forgegate/sandbox.py`: a hardened subprocess
+  (`python -I`, fresh temp cwd, minimal environment, hard timeout) by default, or
+  a Docker container with `--network none`, a read-only root, `--memory 256m` and
+  `--pids-limit 64` when `FORGEGATE_SANDBOX=docker`.
+- Static policy is fail-closed: imports must be allowlisted; subprocess, sockets,
+  `eval`/`exec`, and file writes are rejected.
+- A failed gate never promotes. Promotion keeps the previous version under
+  `servers/<name>/history/`.
+- The semantic judge fails closed: no model, malformed JSON, or a reply without a
+  boolean `pass` is a rejection.
+- Generated tools never receive database credentials. Agent-side reads go through
+  a statement allowlist plus an engine-level read-only guard.
+- Memory mutations are atomic and audited; behavioral rules require explicit
+  approval.
+- Kernel-level isolation and hostile multi-tenant operation remain production
+  concerns; see `docs/ARCHITECTURE.md`.
 
 ## License
 

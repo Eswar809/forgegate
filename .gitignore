@@ -7,6 +7,9 @@ servers/
 registry.json
 memory/history/
 memory/proposals/
+memory/sessions.db*
+memory/facts.json
+memory/facts_history.jsonl
 bench/results/
 
 # python

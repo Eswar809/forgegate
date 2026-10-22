@@ -9,7 +9,10 @@ from pathlib import Path
 
 from .agent import Agent
 from .core import Memory, Registry, repo_root
+from .db import ReadOnlyError, ReadOnlySQLite
 from .gate import verify_tool
+from .judge import SemanticJudge
+from .session import SessionStore
 
 
 def _load_task(args: argparse.Namespace) -> dict:
@@ -43,6 +46,18 @@ def _prepare_cases(cases: list[dict]) -> list[dict]:
     return [walk(case) for case in cases]
 
 
+def _print_facts(memory: Memory, limit: int = 50) -> None:
+    facts = memory.active_facts()
+    for fact in facts[:limit]:
+        print(f"{fact['id']}  [{fact.get('kind', 'fact')}]  {fact['text']}")
+        print(
+            f"  source={fact.get('source', '')} "
+            f"valid_from={fact.get('valid_from', '')}"
+        )
+    if not facts:
+        print("no active facts")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="forgegate", description="Verified self-extension for ops agents"
@@ -53,16 +68,24 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--task", help="inline JSON task")
     run_p.add_argument("--task-file", type=Path)
     run_p.add_argument("--root", type=Path)
+    run_p.add_argument("--session", help="record this exchange under a session id")
 
     reg_p = sub.add_parser("registry", help="inspect procedural memory")
     reg_p.add_argument("action", choices=["list"])
     reg_p.add_argument("--root", type=Path)
 
-    mem_p = sub.add_parser("memory", help="inspect or change behavioral memory")
-    mem_p.add_argument("action", choices=["show", "propose", "approve", "history"])
+    mem_p = sub.add_parser("memory", help="inspect or change memory")
+    mem_p.add_argument(
+        "action",
+        choices=[
+            "show", "propose", "approve", "history",
+            "facts", "fact-history", "forget",
+        ],
+    )
     mem_p.add_argument("--rule")
     mem_p.add_argument("--reason")
     mem_p.add_argument("--proposal")
+    mem_p.add_argument("--fact", help="fact id for forget")
     mem_p.add_argument("--root", type=Path)
 
     gate_p = sub.add_parser("gate", help="verify a tool file")
@@ -72,20 +95,46 @@ def main(argv: list[str] | None = None) -> int:
     )
     gate_p.add_argument("--timeout", type=float, default=10.0)
 
+    judge_p = sub.add_parser("judge", help="semantically check one output")
+    judge_p.add_argument("--task", required=True)
+    judge_p.add_argument("--output", required=True)
+    judge_p.add_argument("--expected", action="append", default=[])
+    judge_p.add_argument("--rubric", default="")
+
+    db_p = sub.add_parser("db", help="read-only database access")
+    db_p.add_argument("action", choices=["tables", "query"])
+    db_p.add_argument("--path", type=Path, required=True)
+    db_p.add_argument("--sql")
+    db_p.add_argument("--limit", type=int, default=50)
+
+    sess_p = sub.add_parser("session", help="inspect stored transcripts")
+    sess_p.add_argument("action", choices=["list", "show"])
+    sess_p.add_argument("--id")
+    sess_p.add_argument("--limit", type=int, default=20)
+    sess_p.add_argument("--root", type=Path)
+
+    slack_p = sub.add_parser("serve-slack", help="run the Slack Socket Mode app")
+    slack_p.add_argument("--root", type=Path)
+
+    mail_p = sub.add_parser("poll-email", help="run one email poll cycle")
+    mail_p.add_argument("--root", type=Path)
+    mail_p.add_argument("--limit", type=int, default=5)
+
     args = parser.parse_args(argv)
 
     if args.command == "run":
         task = _load_task(args)
-        result = Agent(root=args.root).handle(task)
+        result = Agent(root=args.root, session_id=args.session).handle(task)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0 if result["ok"] else 1
 
     if args.command == "registry":
         registry = Registry(args.root)
-        for entry in registry.all():
+        entries = registry.all()
+        for entry in entries:
             print(f"{entry.name:24} uses={entry.uses:<3} {entry.path}")
             print(f"  {entry.description}")
-        if not registry.all():
+        if not entries:
             print("registry is empty")
         return 0
 
@@ -109,6 +158,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit("--proposal is required")
             backup = memory.approve(args.proposal)
             print(f"approved; previous version saved to {backup}")
+        elif args.action == "facts":
+            _print_facts(memory)
+        elif args.action == "fact-history":
+            for record in memory.fact_history(limit=50):
+                print(json.dumps(record, ensure_ascii=False))
+        elif args.action == "forget":
+            if not args.fact:
+                raise SystemExit("--fact is required")
+            ok = memory.invalidate_fact(
+                args.fact, reason=args.reason or "manual", source="cli"
+            )
+            print("invalidated" if ok else "not found")
+            return 0 if ok else 1
         return 0
 
     if args.command == "gate":
@@ -123,6 +185,59 @@ def main(argv: list[str] | None = None) -> int:
         result = verify_tool(args.tool, cases, timeout=args.timeout)
         print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
         return 0 if result.ok else 1
+
+    if args.command == "judge":
+        verdict = SemanticJudge().judge(
+            args.task, args.output,
+            expected=args.expected, rubric=args.rubric,
+        )
+        print(json.dumps(verdict.to_dict(), indent=2, ensure_ascii=False))
+        return 0 if verdict.ok else 1
+
+    if args.command == "db":
+        try:
+            with ReadOnlySQLite(args.path) as database:
+                if args.action == "tables":
+                    print(json.dumps(database.tables(), indent=2))
+                    return 0
+                if not args.sql:
+                    raise SystemExit("--sql is required for query")
+                rows = database.query(args.sql, limit=args.limit)
+        except (ReadOnlyError, FileNotFoundError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "session":
+        store = SessionStore(Memory(args.root).sessions_path)
+        if args.action == "list":
+            for row in store.sessions(limit=args.limit):
+                print(f"{row['session_id']:32} {row['updated_at']}")
+            return 0
+        if not args.id:
+            raise SystemExit("--id is required for show")
+        print(json.dumps(store.messages(args.id, limit=args.limit), indent=2))
+        return 0
+
+    if args.command == "serve-slack":
+        from .adapters.slack import run_socket_mode
+
+        run_socket_mode(Agent(root=args.root, session_id="slack"))
+        return 0
+
+    if args.command == "poll-email":
+        from .adapters.email import EmailConfig, EmailPoller, task_from_email
+
+        poller = EmailPoller(EmailConfig.from_env())
+        agent = Agent(root=args.root, session_id="email")
+        for message in poller.fetch_unseen(limit=args.limit):
+            result = agent.handle(task_from_email(message))
+            body = result.get("output") or result.get("error") or "(no output)"
+            poller.reply(message["from"], message["subject"], body)
+            poller.mark_seen(message["uid"])
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
 
     return 1
 

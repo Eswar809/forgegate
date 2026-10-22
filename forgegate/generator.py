@@ -3,18 +3,20 @@
 FixtureGenerator keeps the demo and tests deterministic offline.
 LLMGenerator talks to any OpenAI-compatible endpoint (Meta Model API,
 Baseten, Modal, Fireworks, vLLM) and is selected when env vars are present.
+
+Both receive the same memory context (behavioral rules + recalled facts),
+following the prefetch pattern used by Hermes Agent and Anthropic's memory
+tool: memory is read before generation, never written by the generator.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import re
-import urllib.request
 from pathlib import Path
 from typing import Any, Protocol
 
 from .core import repo_root
+from .llm import LLMClient, LLMError, strip_code_fences
 
 TOOL_SYSTEM_PROMPT = """You write ONE small Python CLI tool.
 
@@ -46,7 +48,7 @@ Reply with the Python source only, no markdown fences.
 
 
 class Generator(Protocol):
-    def generate(self, task: dict[str, Any]) -> str: ...
+    def generate(self, task: dict[str, Any], context: str = "") -> str: ...
 
 
 class FixtureGenerator:
@@ -55,7 +57,7 @@ class FixtureGenerator:
     def __init__(self, root: str | Path | None = None) -> None:
         self.dir = repo_root(root) / "bench" / "fixtures"
 
-    def generate(self, task: dict[str, Any]) -> str:
+    def generate(self, task: dict[str, Any], context: str = "") -> str:
         fixture = task.get("fixture") or task["tool_name"]
         path = self.dir / f"{fixture}.py"
         if not path.exists():
@@ -63,54 +65,36 @@ class FixtureGenerator:
         return path.read_text(encoding="utf-8")
 
 
-def _strip_fences(text: str) -> str:
-    text = text.strip()
-    match = re.search(r"```(?:python)?\s*(.*?)```", text, re.DOTALL)
-    return match.group(1).strip() if match else text
-
-
 class LLMGenerator:
-    """OpenAI-compatible chat-completions client (stdlib only)."""
+    """Generates a tool from the task plus recalled memory context."""
 
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path | None = None,
+        client: LLMClient | None = None,
+    ) -> None:
         self.root = repo_root(root)
-        self.base = os.environ.get("FORGEGATE_API_BASE", "").rstrip("/")
-        self.key = os.environ.get("FORGEGATE_API_KEY", "")
-        self.model = os.environ.get("FORGEGATE_MODEL", "")
+        self.client = client or LLMClient()
 
     def available(self) -> bool:
-        return bool(self.base and self.key and self.model)
+        return self.client.available()
 
-    def generate(self, task: dict[str, Any]) -> str:
+    def generate(self, task: dict[str, Any], context: str = "") -> str:
         user = json.dumps(
             {
                 "task": task["description"],
                 "tool_name": task["tool_name"],
                 "arguments": task.get("args", {}),
                 "example_tests": task.get("tests", []),
+                "memory_context": context[-6000:],
             },
             indent=2,
         )
-        payload = json.dumps({
-            "model": self.model,
-            "temperature": 0.2,
-            "messages": [
-                {"role": "system", "content": TOOL_SYSTEM_PROMPT},
-                {"role": "user", "content": user},
-            ],
-        }).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base}/chat/completions",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.key}",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=120) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        content = data["choices"][0]["message"]["content"]
-        return _strip_fences(content)
+        try:
+            reply = self.client.complete(TOOL_SYSTEM_PROMPT, user, temperature=0.2)
+        except LLMError:
+            raise
+        return strip_code_fences(reply)
 
 
 def build_generator(root: str | Path | None = None) -> Generator:

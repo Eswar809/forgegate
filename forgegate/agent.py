@@ -13,6 +13,10 @@ from typing import Any
 from .core import Memory, Registry, ToolEntry, now_iso, repo_root, stamp
 from .gate import GateResult, run_cli, verify_tool
 from .generator import Generator, build_generator
+from .judge import SemanticJudge
+from .llm import LLMClient
+from .memory_ai import remember_outcome
+from .session import SessionStore
 
 SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 
@@ -88,11 +92,23 @@ class Agent:
         self,
         root: str | Path | None = None,
         generator: Generator | None = None,
+        *,
+        session_id: str | None = None,
+        judge: SemanticJudge | None = None,
+        llm: LLMClient | None = None,
     ) -> None:
         self.root = repo_root(root)
         self.registry = Registry(self.root)
         self.memory = Memory(self.root)
         self.generator = generator or build_generator(self.root)
+        self.llm = llm or LLMClient()
+        self.judge = judge or SemanticJudge(self.llm)
+        self.session_id = session_id
+        self.sessions = (
+            SessionStore(self.memory.sessions_path) if session_id else None
+        )
+        if self.sessions is not None:
+            self.sessions.ensure(session_id)
 
     def _output_ok(self, task: dict[str, Any], output: str) -> bool:
         wanted = task.get("expected_contains", [])
@@ -100,7 +116,59 @@ class Agent:
             wanted = [wanted]
         return all(item in output for item in wanted)
 
-    def handle(self, task: dict[str, Any]) -> dict[str, Any]:
+    def _judge(self, task: dict[str, Any], output: str):
+        """Run the semantic judge whenever the task asks for one.
+
+        A requested judge is never skipped: ``SemanticJudge.judge`` returns a
+        failing verdict when no model is configured, so offline runs reject
+        rather than silently passing on the substring check alone.
+        """
+        if not (task.get("judge") or task.get("rubric")):
+            return None
+        return self.judge.judge(
+            task["description"], output,
+            expected=task.get("expected_contains", []),
+            rubric=task.get("rubric", ""),
+        )
+
+    def _finalize(
+        self,
+        task: dict[str, Any],
+        started: float,
+        mode: str,
+        tool: str | None,
+        run: dict[str, Any],
+        gate: GateResult | None = None,
+    ) -> dict[str, Any]:
+        output = run["stdout"].strip()
+        ok = bool(run["ok"]) and self._output_ok(task, output)
+        verdict = self._judge(task, output)
+        if verdict is not None:
+            ok = ok and verdict.ok
+
+        memory_writes = 0
+        if ok:
+            try:
+                memory_writes = len(remember_outcome(
+                    self.memory, task, output, client=self.llm,
+                ))
+            except Exception:
+                memory_writes = 0
+
+        return {
+            "task_id": task["id"],
+            "mode": mode,
+            "tool": tool,
+            "ok": ok,
+            "output": output,
+            "error": run["stderr"].strip(),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "gate": gate.to_dict() if gate is not None else None,
+            "judge": verdict.to_dict() if verdict is not None else None,
+            "memory_writes": memory_writes,
+        }
+
+    def _handle(self, task: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
         query = task["description"]
 
@@ -114,26 +182,19 @@ class Agent:
                 timeout=float(task.get("timeout", 10)),
             )
             self.registry.bump(existing.name)
-            output = run["stdout"].strip()
-            return {
-                "task_id": task["id"],
-                "mode": "reuse",
-                "tool": existing.name,
-                "ok": run["ok"] and self._output_ok(task, output),
-                "output": output,
-                "error": run["stderr"].strip(),
-                "latency_ms": round((time.perf_counter() - started) * 1000, 1),
-                "gate": None,
-            }
+            return self._finalize(
+                task, started, "reuse", existing.name, run,
+            )
 
         try:
-            source = self.generator.generate(task)
+            context = self.memory.prefetch(query)
+            source = self.generator.generate(task, context=context)
         except Exception as exc:  # generation failure is a normal outcome
             return {
                 "task_id": task["id"], "mode": "rejected", "tool": None,
                 "ok": False, "output": "", "error": f"generation failed: {exc}",
                 "latency_ms": round((time.perf_counter() - started) * 1000, 1),
-                "gate": None,
+                "gate": None, "judge": None, "memory_writes": 0,
             }
 
         staging = self.root / "staging" / f"{task['id']}-{task['tool_name']}.py"
@@ -154,7 +215,7 @@ class Agent:
                 "task_id": task["id"], "mode": "rejected", "tool": None,
                 "ok": False, "output": "", "error": "verification failed",
                 "latency_ms": round((time.perf_counter() - started) * 1000, 1),
-                "gate": gate.to_dict(),
+                "gate": gate.to_dict(), "judge": None, "memory_writes": 0,
             }
 
         entry = promote(self.root, staging, task, gate, self.registry)
@@ -164,14 +225,31 @@ class Agent:
             self.root / entry.path, args, timeout=float(task.get("timeout", 10))
         )
         self.registry.bump(entry.name)
-        output = run["stdout"].strip()
-        return {
-            "task_id": task["id"],
-            "mode": "forged",
-            "tool": entry.name,
-            "ok": run["ok"] and self._output_ok(task, output),
-            "output": output,
-            "error": run["stderr"].strip(),
-            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
-            "gate": gate.to_dict(),
-        }
+        return self._finalize(
+            task, started, "forged", entry.name, run, gate,
+        )
+
+    def handle(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Run one task and, when a session id was given, record the exchange."""
+        if self.sessions is not None:
+            self.sessions.append(
+                self.session_id, "user",
+                json.dumps({
+                    "task_id": task.get("id"),
+                    "description": task.get("description"),
+                }, ensure_ascii=False),
+                {"task_id": task.get("id")},
+            )
+        result = self._handle(task)
+        if self.sessions is not None:
+            self.sessions.append(
+                self.session_id, "assistant",
+                json.dumps({
+                    "mode": result.get("mode"),
+                    "tool": result.get("tool"),
+                    "ok": result.get("ok"),
+                    "output": result.get("output"),
+                }, ensure_ascii=False),
+                {"task_id": task.get("id"), "mode": result.get("mode")},
+            )
+        return result
